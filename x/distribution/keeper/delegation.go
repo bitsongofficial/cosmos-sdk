@@ -122,19 +122,15 @@ func (k Keeper) CalculateDelegationRewards(ctx sdk.Context, val stakingtypes.Val
 		// A small amount of this error is tolerated and corrected for,
 		// however any greater amount should be considered a breach in expected
 		// behaviour.
-		marginOfErr := sdk.SmallestDec().MulInt64(3)
+		marginOfErr := currentStake.Mul(sdk.NewDecWithPrec(50, 3)) // 5.0%
 		if stake.LTE(currentStake.Add(marginOfErr)) {
 			stake = currentStake
 		} else {
-			if stake.LTE(currentStake.Add(math.LegacyNewDecWithPrec(50, 3))) { // 5%
-				stake = currentStake
-			} else {
-				panic(fmt.Sprintf("calculated final stake for delegator %s  to validator %s is greater than current stake"+
-					"\n\tfinal stake:\t%s"+
-					"\n\tcurrent stake:\t%s",
-					del.GetDelegatorAddr(), val.GetOperator(), stake, currentStake,
-				))
-			}
+			panic(fmt.Sprintf("calculated final stake for delegator %s  to validator %s is greater than current stake"+
+				"\n\tfinal stake:\t%s"+
+				"\n\tcurrent stake:\t%s",
+				del.GetDelegatorAddr(), val.GetOperator(), stake, currentStake,
+			))
 		}
 	}
 
