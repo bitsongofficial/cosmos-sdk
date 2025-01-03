@@ -20,6 +20,99 @@ import (
 	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
 )
 
+func TestBitsongPatchRewards(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	key := sdk.NewKVStoreKey(disttypes.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(t, key, sdk.NewTransientStoreKey("transient_test"))
+	encCfg := moduletestutil.MakeTestEncodingConfig(distribution.AppModuleBasic{})
+	ctx := testCtx.Ctx.WithBlockHeader(tmproto.Header{Height: 1})
+
+	bankKeeper := distrtestutil.NewMockBankKeeper(ctrl)
+	stakingKeeper := distrtestutil.NewMockStakingKeeper(ctrl)
+	accountKeeper := distrtestutil.NewMockAccountKeeper(ctrl)
+
+	accountKeeper.EXPECT().GetModuleAddress("distribution").Return(distrAcc.GetAddress())
+
+	distrKeeper := keeper.NewKeeper(
+		encCfg.Codec,
+		key,
+		accountKeeper,
+		bankKeeper,
+		stakingKeeper,
+		"fee_collector",
+		authtypes.NewModuleAddress("gov").String(),
+	)
+
+	// reset fee pool
+	distrKeeper.SetFeePool(ctx, disttypes.InitialFeePool())
+	distrKeeper.SetParams(ctx, disttypes.DefaultParams())
+
+	// create validator with 50% commission
+	valAddr := sdk.ValAddress(valConsAddr0)
+	addr := sdk.AccAddress(valAddr)
+	val, err := distrtestutil.CreateValidator(valConsPk0, sdk.NewInt(1000))
+	require.NoError(t, err)
+	val.Commission = stakingtypes.NewCommission(sdk.NewDecWithPrec(5, 1), sdk.NewDecWithPrec(5, 1), math.LegacyNewDec(0))
+	// delegation mock
+	del := stakingtypes.NewDelegation(addr, valAddr, val.DelegatorShares)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val).Times(3)
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), addr, valAddr).Return(del)
+
+	// run the necessary hooks manually (given that we are not running an actual staking module)
+	err = distrtestutil.CallCreateValidatorHooks(ctx, distrKeeper, addr, valAddr)
+	require.NoError(t, err)
+
+	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
+
+	// historical count should be 2 (once for validator init, once for delegation init)
+	require.Equal(t, uint64(2), distrKeeper.GetValidatorHistoricalReferenceCount(ctx))
+
+	// end period
+	endingPeriod := distrKeeper.IncrementValidatorPeriod(ctx, val)
+
+	// historical count should be 2 still
+	require.Equal(t, uint64(2), distrKeeper.GetValidatorHistoricalReferenceCount(ctx))
+
+	// calculate delegation rewards
+	rewards := distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+
+	// rewards should be zero
+	require.True(t, rewards.IsZero())
+
+	// allocate some rewards
+	initial := int64(10)
+	tokens := sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial)}}
+	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+
+	// end period
+	endingPeriod = distrKeeper.IncrementValidatorPeriod(ctx, val)
+
+	// calculate delegation rewards
+	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+
+	// rewards should be half the tokens
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 2)}}, rewards)
+
+	// commission should be the other half
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 2)}}, distrKeeper.GetValidatorAccumulatedCommission(ctx, valAddr).Commission)
+
+	// slash validator
+	val.Tokens = math.LegacyNewDecFromInt(val.Tokens).MulTruncate(math.LegacyOneDec().Sub(math.LegacyNewDecWithPrec(1, 2))).RoundInt() // 1 % slash
+	// calculate delegation rewards
+	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+
+	// rewards should be half the tokens, - 1% for slash that occured
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 2).MulTruncate(math.LegacyOneDec().Sub(math.LegacyNewDecWithPrec(1, 2)))}}, rewards)
+
+	// commission should be the other half
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 2)}}, distrKeeper.GetValidatorAccumulatedCommission(ctx, valAddr).Commission)
+
+	// set val tokens to > 5% difference
+	val.Tokens = math.LegacyNewDecFromInt(val.Tokens).MulTruncate(math.LegacyOneDec().Sub(math.LegacyNewDecWithPrec(1, 1))).RoundInt() // 10 % slash
+	require.Panics(t, func() {
+		distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	})
+}
 func TestCalculateRewardsBasic(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	key := sdk.NewKVStoreKey(disttypes.StoreKey)
