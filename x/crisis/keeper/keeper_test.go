@@ -56,6 +56,9 @@ func TestAssertInvariants(t *testing.T) {
 	keeper.RegisterRoute("testModule", "testRoute1", func(sdk.Context) (string, bool) { return "", false })
 	require.NotPanics(t, func() { keeper.AssertInvariants(testCtx.Ctx) })
 
+	keeper.RegisterRoute("staking", "positive-delegation", func(sdk.Context) (string, bool) { return "", true })
+	require.Panics(t, func() { keeper.AssertInvariants(testCtx.Ctx) })
+
 	keeper.RegisterRoute("testModule", "testRoute2", func(sdk.Context) (string, bool) { return "", true })
 	require.Panics(t, func() { keeper.AssertInvariants(testCtx.Ctx) })
 }
